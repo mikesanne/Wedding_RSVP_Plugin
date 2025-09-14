@@ -1,7 +1,6 @@
 # Wedding_RSVP_Plugin
 A Wordpress plugin to be able to manage a guest list and enable a guest lookup to relate to an rsvp entry for editing and confirmation
 
-
 Install: copy folder to wp-content/plugins/, then activate plugin in WP admin. Shortcode: [wedding_rsvp_form]. Elementor widget available. Configure SMTP under Settings->Wedding RSVP.
 
 # Version 1 (basic prototype)
@@ -20,3 +19,14 @@ Install: copy folder to wp-content/plugins/, then activate plugin in WP admin. S
 - Allowed sending email confirmations through Gmail/Google or any SMTP server.
 - Admin got some basic settings fields for From Name/Email.
 - Guests still mostly read-only in backend.
+
+# Version 5 (Guest DB management)
+- Added database structure for wedding guests with name, surname, partner fields.
+- Allowed manual adding of guests into database via admin.
+- Form linked user input to DB record.
+- SMTP/email confirmations included.
+
+# Version 6 (Partner linking)
+- Introduced partner logic: if a guest has a partner in DB, form also collects partner RSVP.
+- Partner stored as a separate entry in DB (not just an inner entry).
+- Both RSVPs tied together via partner_id.

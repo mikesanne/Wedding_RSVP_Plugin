@@ -24,13 +24,27 @@
           document.getElementById('wprsvp-email').value = g.email || '';
           document.getElementById('wprsvp-meal').value = g.guest_meal || '';
           document.getElementById('wprsvp-rsvp').value = g.rsvp_status || '';
-          document.getElementById('wprsvp-partner-first').value = g.partner_first_name || '';
-          document.getElementById('wprsvp-partner-last').value = g.partner_last_name || '';
-          document.getElementById('wprsvp-partner-meal').value = g.partner_meal || '';
-          document.getElementById('wprsvp-partner-rsvp').value = g.partner_rsvp_status || '';
 
-          if (g.partner_first_name || g.partner_last_name) document.getElementById('wprsvp-partner-block').style.display = 'block';
-          else document.getElementById('wprsvp-partner-block').style.display = 'none';
+          if (data.data.partner){
+            var p = data.data.partner;
+            document.getElementById('wprsvp-partner-block').style.display = 'block';
+            document.getElementById('wprsvp-partner-note').innerText = 'Partner: ' + p.first_name + ' ' + p.last_name;
+            // store partner id in a hidden input for submit
+            var existing = document.getElementById('wprsvp-partner-id');
+            if (!existing){
+              var inp = document.createElement('input');
+              inp.type='hidden'; inp.id='wprsvp-partner-id'; inp.name='partner_id'; inp.value = p.id;
+              fullForm.appendChild(inp);
+            } else { existing.value = p.id; }
+            document.getElementById('wprsvp-partner-rsvp').value = p.rsvp_status || '';
+            document.getElementById('wprsvp-partner-meal').value = p.guest_meal || '';
+          } else {
+            document.getElementById('wprsvp-partner-block').style.display = 'none';
+            var existing = document.getElementById('wprsvp-partner-id'); if (existing) existing.remove();
+            document.getElementById('wprsvp-partner-note').innerText='';
+            document.getElementById('wprsvp-partner-rsvp').value='';
+            document.getElementById('wprsvp-partner-meal').value='';
+          }
 
         } else {
           // not found: clear previous values and hide partner block
@@ -38,11 +52,8 @@
           document.getElementById('wprsvp-email').value = '';
           document.getElementById('wprsvp-meal').value = '';
           document.getElementById('wprsvp-rsvp').value = '';
-          document.getElementById('wprsvp-partner-first').value = '';
-          document.getElementById('wprsvp-partner-last').value = '';
-          document.getElementById('wprsvp-partner-meal').value = '';
-          document.getElementById('wprsvp-partner-rsvp').value = '';
           document.getElementById('wprsvp-partner-block').style.display = 'none';
+          var existing = document.getElementById('wprsvp-partner-id'); if (existing) existing.remove();
         }
         fullForm.style.display = 'block';
       }).catch(function(err){ console.error(err); alert('Network error'); });
