@@ -1,0 +1,3 @@
+.wprsvp-wrap label { display:block; margin-bottom:0.5rem; }
+.wprsvp-wrap input, .wprsvp-wrap select, .wprsvp-wrap textarea { width:100%; max-width:420px; padding:6px; }
+.wprsvp-wrap button { margin-top:8px; padding:8px 14px; }
