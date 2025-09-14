@@ -30,3 +30,11 @@ Install: copy folder to wp-content/plugins/, then activate plugin in WP admin. S
 - Introduced partner logic: if a guest has a partner in DB, form also collects partner RSVP.
 - Partner stored as a separate entry in DB (not just an inner entry).
 - Both RSVPs tied together via partner_id.
+
+# Version 7 (Expanded feature set)
+- Big jump in functionality:
+- CSV import of guest list (with partner linking).
+- OAuth2 (Gmail) support for sending emails securely.
+- Custom HTML email templates with placeholders ({{first}}, {{meal}}, etc.).
+- More complete guest admin backend (view entries).
+- Public form improved but no CRUD yet.

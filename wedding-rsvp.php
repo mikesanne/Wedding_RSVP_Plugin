@@ -1,9 +1,8 @@
 <?php
 /*
 Plugin Name: Wedding RSVP & Guest Database
-Plugin URI:  https://example.com/
-Description: RSVP form + guest DB. Shortcode + Elementor widget + admin guest management + SMTP settings + email confirmations. Partners are separate linked rows.
-Version:     1.5
+Description: RSVP form + guest DB. Shortcode + Elementor widget + admin guest management + SMTP/OAuth2 + CSV import + HTML email templates.
+Version:     1.7
 Author:      Your Name
 Text Domain: wedding-rsvp
 */
@@ -12,7 +11,7 @@ if (!defined('ABSPATH')) exit;
 
 define('WPRSVP_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPRSVP_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('WPRSVP_VERSION','1.5');
+define('WPRSVP_VERSION','1.7');
 
 /* -------- Activation: create/upgrade table -------- */
 register_activation_hook(__FILE__, 'wprsvp_activate');
@@ -52,7 +51,7 @@ function wprsvp_enqueue_scripts(){
     wp_enqueue_style('wprsvp-css', WPRSVP_PLUGIN_URL . 'assets/css/rsvp-style.css', array(), WPRSVP_VERSION);
 }
 
-/* -------- Shortcode (renders the frontend form) -------- */
+/* -------- Shortcode (frontend form) -------- */
 add_shortcode('wedding_rsvp_form','wprsvp_render_form');
 function wprsvp_render_form($atts){
     ob_start();
@@ -121,7 +120,7 @@ function wprsvp_render_form($atts){
     return ob_get_clean();
 }
 
-/* -------- AJAX: search by name (returns guest and partner if linked) -------- */
+/* -------- AJAX: search -------- */
 add_action('wp_ajax_nopriv_wprsvp_search', 'wprsvp_search');
 add_action('wp_ajax_wprsvp_search', 'wprsvp_search');
 function wprsvp_search(){
@@ -147,7 +146,7 @@ function wprsvp_search(){
     wp_send_json_success($result);
 }
 
-/* -------- AJAX: create or update guest + partner linking -------- */
+/* -------- AJAX: submit + partner linking -------- */
 add_action('wp_ajax_nopriv_wprsvp_submit', 'wprsvp_submit');
 add_action('wp_ajax_wprsvp_submit', 'wprsvp_submit');
 function wprsvp_submit(){
@@ -188,7 +187,7 @@ function wprsvp_submit(){
         $main_id = $wpdb->insert_id;
     }
 
-    // If partner linked (client-side returned partner id), update partner's RSVP/meal
+    // Partner handling: if partner_id provided update partner; else if partner names provided try link/create
     $partner_id = intval($_POST['partner_id'] ?? 0);
     if ($partner_id){
         $wpdb->update($table, array('rsvp_status'=>$partner_rsvp,'guest_meal'=>$partner_meal), array('id'=>$partner_id));
@@ -196,7 +195,6 @@ function wprsvp_submit(){
         $wpdb->update($table, array('partner_id'=>$partner_id), array('id'=>$main_id));
         $wpdb->update($table, array('partner_id'=>$main_id), array('id'=>$partner_id));
     } else {
-        // If user provided partner name and it matches someone, link them
         $pfirst = sanitize_text_field($_POST['partner_first_name'] ?? '');
         $plast  = sanitize_text_field($_POST['partner_last_name'] ?? '');
         if ($pfirst && $plast){
@@ -205,12 +203,10 @@ function wprsvp_submit(){
                 $partner_id = $partner['id'];
                 $wpdb->update($table, array('partner_id'=>$partner_id), array('id'=>$main_id));
                 $wpdb->update($table, array('partner_id'=>$main_id), array('id'=>$partner_id));
-                // optionally update partner's rsvp/meal if provided
                 if ($partner_rsvp || $partner_meal){
                     $wpdb->update($table, array('rsvp_status'=>$partner_rsvp,'guest_meal'=>$partner_meal), array('id'=>$partner_id));
                 }
             } else {
-                // create partner row and link
                 $wpdb->insert($table, array(
                     'first_name'=>$pfirst,'last_name'=>$plast,'guest_meal'=>$partner_meal,
                     'rsvp_status'=>$partner_rsvp,'notes'=>'Created as partner via RSVP'
@@ -222,16 +218,32 @@ function wprsvp_submit(){
         }
     }
 
-    // send confirmations to main and partner if emails exist
+    // send confirmations (use HTML templates when configured)
     $send_confirmation = function($to, $first_name, $rsvp_status, $meal){
         if (!$to) return;
-        $subject = 'Your RSVP has been received';
-        $body = "Hi $first_name,\n\nThank you — we received your RSVP.\nRSVP: $rsvp_status\nMeal: $meal\n\nSee you soon!";
-        $headers = array('Content-Type: text/plain; charset=UTF-8');
-        wp_mail($to, $subject, $body, $headers);
+        $subject_template = get_option('wprsvp_email_subject', 'Your RSVP has been received');
+        $html_template = get_option('wprsvp_email_html', '');
+        $plain_template = get_option('wprsvp_email_plain', '');
+
+        $replacements = array(
+            '{{first}}' => $first_name,
+            '{{rsvp}}'  => $rsvp_status,
+            '{{meal}}'  => $meal
+        );
+
+        $subject = strtr($subject_template, $replacements);
+        if ($html_template){
+            $body_html = strtr($html_template, $replacements);
+            $body_plain = $plain_template ? strtr($plain_template, $replacements) : strip_tags($body_html);
+            $headers = array('Content-Type: text/html; charset=UTF-8');
+            wp_mail($to, $subject, $body_html, $headers);
+        } else {
+            $body = $plain_template ? strtr($plain_template, $replacements) : "Hi $first_name,\n\nThank you — we received your RSVP.\nRSVP: $rsvp_status\nMeal: $meal\n\nSee you soon!";
+            $headers = array('Content-Type: text/plain; charset=UTF-8');
+            wp_mail($to, $subject, $body, $headers);
+        }
     };
 
-    // get latest main and partner rows
     $main = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE id=%d", $main_id), ARRAY_A);
     if ($main && !empty($main['email'])) $send_confirmation($main['email'], $main['first_name'], $main['rsvp_status'], $main['guest_meal']);
 
@@ -243,12 +255,14 @@ function wprsvp_submit(){
     wp_send_json_success(array('message'=>'RSVP processed','guest_id'=>$main_id,'partner_id'=>$partner_id));
 }
 
-/* -------- Settings: SMTP and From (Gmail-friendly defaults) -------- */
+/* -------- Settings: SMTP / OAuth2 / Email templates / CSV import -------- */
 add_action('admin_menu', function(){
     add_options_page('Wedding RSVP Settings', 'Wedding RSVP', 'manage_options', 'wprsvp-settings', 'wprsvp_render_settings_page');
+    // Guest admin page added below
 });
 function wprsvp_render_settings_page(){
     if (!current_user_can('manage_options')) return;
+    // handle save
     if (isset($_POST['wprsvp_save_settings'])){
         check_admin_referer('wprsvp_save_settings');
         update_option('wprsvp_smtp_host', sanitize_text_field($_POST['smtp_host']));
@@ -256,8 +270,14 @@ function wprsvp_render_settings_page(){
         update_option('wprsvp_smtp_secure', sanitize_text_field($_POST['smtp_secure']));
         update_option('wprsvp_smtp_user', sanitize_text_field($_POST['smtp_user']));
         update_option('wprsvp_smtp_pass', sanitize_text_field($_POST['smtp_pass']));
+        update_option('wprsvp_oauth_client_id', sanitize_text_field($_POST['oauth_client_id']));
+        update_option('wprsvp_oauth_client_secret', sanitize_text_field($_POST['oauth_client_secret']));
+        update_option('wprsvp_oauth_refresh_token', sanitize_text_field($_POST['oauth_refresh_token']));
         update_option('wprsvp_from_email', sanitize_email($_POST['from_email']));
         update_option('wprsvp_from_name', sanitize_text_field($_POST['from_name']));
+        update_option('wprsvp_email_subject', sanitize_text_field($_POST['email_subject']));
+        update_option('wprsvp_email_html', wp_kses_post($_POST['email_html']));
+        update_option('wprsvp_email_plain', sanitize_textarea_field($_POST['email_plain']));
         echo '<div class="updated"><p>Settings saved.</p></div>';
     }
 
@@ -266,14 +286,21 @@ function wprsvp_render_settings_page(){
     $smtp_secure = get_option('wprsvp_smtp_secure','ssl');
     $smtp_user   = get_option('wprsvp_smtp_user','');
     $smtp_pass   = get_option('wprsvp_smtp_pass','');
+    $oauth_client_id = get_option('wprsvp_oauth_client_id','');
+    $oauth_client_secret = get_option('wprsvp_oauth_client_secret','');
+    $oauth_refresh_token = get_option('wprsvp_oauth_refresh_token','');
     $from_email  = get_option('wprsvp_from_email', get_bloginfo('admin_email'));
     $from_name   = get_option('wprsvp_from_name', get_bloginfo('name'));
+    $email_subject = get_option('wprsvp_email_subject','Your RSVP has been received');
+    $email_html = get_option('wprsvp_email_html','');
+    $email_plain = get_option('wprsvp_email_plain','');
 
     ?>
     <div class="wrap">
       <h1>Wedding RSVP Settings</h1>
       <form method="post">
         <?php wp_nonce_field('wprsvp_save_settings'); ?>
+        <h2>SMTP / Gmail</h2>
         <table class="form-table">
           <tr><th>SMTP Host</th><td><input type="text" name="smtp_host" value="<?php echo esc_attr($smtp_host); ?>" style="width:400px"></td></tr>
           <tr><th>SMTP Port</th><td><input type="number" name="smtp_port" value="<?php echo esc_attr($smtp_port); ?>"></td></tr>
@@ -285,19 +312,65 @@ function wprsvp_render_settings_page(){
               </select>
           </td></tr>
           <tr><th>SMTP Username</th><td><input type="text" name="smtp_user" value="<?php echo esc_attr($smtp_user); ?>" style="width:300px"></td></tr>
-          <tr><th>SMTP Password (use App Password for Gmail)</th><td><input type="password" name="smtp_pass" value="<?php echo esc_attr($smtp_pass); ?>" style="width:300px"></td></tr>
+          <tr><th>SMTP Password (App Password)</th><td><input type="password" name="smtp_pass" value="<?php echo esc_attr($smtp_pass); ?>" style="width:300px"></td></tr>
+        </table>
+
+        <h2>OAuth2 (optional - for Gmail API/XOAUTH2)</h2>
+        <p>If you want to use OAuth2 instead of username/password, create credentials in Google Cloud Console and paste the Client ID, Client Secret and Refresh Token here.</p>
+        <table class="form-table">
+          <tr><th>OAuth Client ID</th><td><input type="text" name="oauth_client_id" value="<?php echo esc_attr($oauth_client_id); ?>" style="width:400px"></td></tr>
+          <tr><th>OAuth Client Secret</th><td><input type="text" name="oauth_client_secret" value="<?php echo esc_attr($oauth_client_secret); ?>" style="width:400px"></td></tr>
+          <tr><th>OAuth Refresh Token</th><td><input type="text" name="oauth_refresh_token" value="<?php echo esc_attr($oauth_refresh_token); ?>" style="width:400px"></td></tr>
+        </table>
+
+        <h2>From / Email templates</h2>
+        <table class="form-table">
           <tr><th>From Email</th><td><input type="email" name="from_email" value="<?php echo esc_attr($from_email); ?>"></td></tr>
           <tr><th>From Name</th><td><input type="text" name="from_name" value="<?php echo esc_attr($from_name); ?>"></td></tr>
+          <tr><th>Email Subject</th><td><input type="text" name="email_subject" value="<?php echo esc_attr($email_subject); ?>" style="width:400px"></td></tr>
+          <tr><th>Email HTML Template</th><td><textarea name="email_html" rows="8" cols="80"><?php echo esc_textarea($email_html); ?></textarea><p class="description">Use {{first}}, {{rsvp}}, {{meal}} placeholders.</p></td></tr>
+          <tr><th>Email Plain Template</th><td><textarea name="email_plain" rows="6" cols="80"><?php echo esc_textarea($email_plain); ?></textarea></td></tr>
         </table>
+
         <p><input type="submit" name="wprsvp_save_settings" class="button-primary" value="Save Settings"></p>
       </form>
-      <h2>Gmail notes</h2>
-      <p>For Gmail accounts, create an <strong>App Password</strong> and use it as SMTP password. App Passwords are available when using 2-Step Verification on your Google account.</p>
+
+      <h2>Template preview</h2>
+      <p>Preview placeholders replaced with sample data:</p>
+      <div style="border:1px solid #ddd; padding:10px; background:#fff;">
+        <h3><?php echo esc_html(strtr($email_subject, array('{{first}'=>'Anna'))); ?></h3>
+        <div><?php echo wp_kses_post(strtr($email_html, array('{{first}'=>'Anna','{{rsvp}'=>'yes','{{meal}'=>'Vegetarian'))); ?></div>
+        <pre><?php echo esc_html(strtr($email_plain, array('{{first}'=>'Anna','{{rsvp}'=>'yes','{{meal}'=>'Vegetarian'))); ?></pre>
+      </div>
     </div>
     <?php
 }
 
-/* -------- Apply SMTP via phpmailer_init -------- */
+/* -------- OAuth2 token fetch helper -------- */
+function wprsvp_get_google_access_token(){
+    $client_id = get_option('wprsvp_oauth_client_id');
+    $client_secret = get_option('wprsvp_oauth_client_secret');
+    $refresh_token = get_option('wprsvp_oauth_refresh_token');
+    if (!$client_id || !$client_secret || !$refresh_token) return false;
+
+    $resp = wp_remote_post('https://oauth2.googleapis.com/token', array(
+        'body' => array(
+            'client_id' => $client_id,
+            'client_secret' => $client_secret,
+            'refresh_token' => $refresh_token,
+            'grant_type' => 'refresh_token'
+        ),
+        'timeout' => 15
+    ));
+
+    if (is_wp_error($resp)) return false;
+    $body = wp_remote_retrieve_body($resp);
+    $data = json_decode($body, true);
+    if (isset($data['access_token'])) return $data['access_token'];
+    return false;
+}
+
+/* -------- Apply SMTP / OAuth2 via phpmailer_init -------- */
 add_action('phpmailer_init', function($phpmailer){
     $host = get_option('wprsvp_smtp_host');
     $port = get_option('wprsvp_smtp_port');
@@ -307,6 +380,34 @@ add_action('phpmailer_init', function($phpmailer){
     $from_email = get_option('wprsvp_from_email');
     $from_name  = get_option('wprsvp_from_name');
 
+    $oauth_client_id = get_option('wprsvp_oauth_client_id');
+    $oauth_client_secret = get_option('wprsvp_oauth_client_secret');
+    $oauth_refresh_token = get_option('wprsvp_oauth_refresh_token');
+
+    if ($oauth_client_id && $oauth_client_secret && $oauth_refresh_token){
+        // try to obtain access token and use XOAUTH2
+        $access_token = wprsvp_get_google_access_token();
+        if ($access_token){
+            $phpmailer->isSMTP();
+            $phpmailer->Host = $host ?: 'smtp.gmail.com';
+            $phpmailer->Port = $port ?: 587;
+            if ($secure) $phpmailer->SMTPSecure = $secure;
+            $phpmailer->SMTPAuth = true;
+            $phpmailer->AuthType = 'XOAUTH2';
+            // PHPMailer can use an oauth object; set minimal properties
+            $phpmailer->oauth = (object) array(
+                'clientId' => $oauth_client_id,
+                'clientSecret' => $oauth_client_secret,
+                'refreshToken' => $oauth_refresh_token,
+                'userName' => $user,
+                'accessToken' => $access_token
+            );
+            if ($from_email) $phpmailer->setFrom($from_email, $from_name ? $from_name : '');
+            return;
+        }
+    }
+
+    // fallback to username/password SMTP
     if ($host && $user && $pass){
         $phpmailer->isSMTP();
         $phpmailer->Host = $host;
@@ -319,7 +420,7 @@ add_action('phpmailer_init', function($phpmailer){
     }
 });
 
-/* -------- Admin: Guest management (Add/Edit/Delete, List) with partner linking -------- */
+/* -------- Admin: Guest management (Add/Edit/Delete, CSV import) -------- */
 add_action('admin_menu', function(){
     add_menu_page('Wedding Guests', 'Wedding Guests', 'manage_options', 'wprsvp-guests', 'wprsvp_render_guests_page', 'dashicons-groups', 26);
 });
@@ -328,7 +429,56 @@ function wprsvp_render_guests_page(){
     global $wpdb;
     $table = $wpdb->prefix . 'wedding_guests';
 
-    // Handle Add
+    // Handle CSV upload
+    if (isset($_POST['wprsvp_import_csv']) && !empty($_FILES['wprsvp_csv']['tmp_name'])){
+        check_admin_referer('wprsvp_import_csv');
+        $file = $_FILES['wprsvp_csv']['tmp_name'];
+        $handle = fopen($file, 'r');
+        $row = 0;
+        $imported = 0;
+        while (($data = fgetcsv($handle, 2000, ',')) !== FALSE){
+            $row++;
+            if ($row == 1) continue; // skip header
+            // expected columns: first,last,email,partner_first,partner_last,guest_meal,rsvp
+            $first = sanitize_text_field($data[0] ?? '');
+            $last = sanitize_text_field($data[1] ?? '');
+            $email = sanitize_email($data[2] ?? '');
+            $pfirst = sanitize_text_field($data[3] ?? '');
+            $plast = sanitize_text_field($data[4] ?? '');
+            $meal = sanitize_text_field($data[5] ?? '');
+            $rsvp = sanitize_text_field($data[6] ?? '');
+
+            if (!$first || !$last) continue;
+            // skip if exact duplicate
+            $exists = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s)", $first, $last), ARRAY_A);
+            if ($exists) {
+                // update
+                $wpdb->update($table, array('email'=>$email,'guest_meal'=>$meal,'rsvp_status'=>$rsvp), array('id'=>$exists['id']));
+                $main_id = $exists['id'];
+            } else {
+                $wpdb->insert($table, array('first_name'=>$first,'last_name'=>$last,'email'=>$email,'guest_meal'=>$meal,'rsvp_status'=>$rsvp));
+                $main_id = $wpdb->insert_id;
+                $imported++;
+            }
+            // partner linking
+            if ($pfirst && $plast){
+                $partner = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s)", $pfirst, $plast), ARRAY_A);
+                if ($partner){
+                    $partner_id = $partner['id'];
+                } else {
+                    $wpdb->insert($table, array('first_name'=>$pfirst,'last_name'=>$plast,'notes'=>'Imported as partner'));
+                    $partner_id = $wpdb->insert_id;
+                }
+                // link both ways
+                $wpdb->update($table, array('partner_id'=>$partner_id), array('id'=>$main_id));
+                $wpdb->update($table, array('partner_id'=>$main_id), array('id'=>$partner_id));
+            }
+        }
+        fclose($handle);
+        echo '<div class="updated"><p>CSV import complete. Imported rows: '.intval($imported).'</p></div>';
+    }
+
+    // Handle Add/Edit/Delete from previous implementation...
     if (isset($_POST['wprsvp_add_guest'])){
         check_admin_referer('wprsvp_add_guest');
         $wpdb->insert($table, array(
@@ -337,9 +487,9 @@ function wprsvp_render_guests_page(){
             'email'      => sanitize_email($_POST['email']),
             'guest_meal' => sanitize_text_field($_POST['guest_meal']),
             'rsvp_status'=> sanitize_text_field($_POST['rsvp_status']),
-            'notes'      => sanitize_textarea_field($_POST['notes'])
+            'notes' => sanitize_textarea_field($_POST['notes'])
         ));
-        // optionally link partner
+        // partner link
         if (!empty($_POST['partner_select'])){
             $pid = intval($_POST['partner_select']);
             $nid = $wpdb->insert_id;
@@ -351,7 +501,6 @@ function wprsvp_render_guests_page(){
         echo '<div class="updated"><p>Guest added.</p></div>';
     }
 
-    // Handle Update
     if (isset($_POST['wprsvp_update_guest'])){
         check_admin_referer('wprsvp_update_guest');
         $id = intval($_POST['guest_id']);
@@ -363,13 +512,9 @@ function wprsvp_render_guests_page(){
             'rsvp_status'=> sanitize_text_field($_POST['rsvp_status']),
             'notes' => sanitize_textarea_field($_POST['notes'])
         ), array('id'=>$id));
-        // partner linking via select
         $sel = intval($_POST['partner_select'] ?? 0);
-        // unlink existing partner for this guest
         $current = $wpdb->get_row($wpdb->prepare("SELECT partner_id FROM $table WHERE id=%d", $id), ARRAY_A);
-        if ($current && $current['partner_id']){
-            $wpdb->update($table, array('partner_id'=>null), array('id'=>$current['partner_id']));
-        }
+        if ($current && $current['partner_id']) $wpdb->update($table, array('partner_id'=>null), array('id'=>$current['partner_id']));
         if ($sel){
             $wpdb->update($table, array('partner_id'=>$sel), array('id'=>$id));
             $wpdb->update($table, array('partner_id'=>$id), array('id'=>$sel));
@@ -379,11 +524,9 @@ function wprsvp_render_guests_page(){
         echo '<div class="updated"><p>Guest updated.</p></div>';
     }
 
-    // Handle Delete (via GET with nonce)
     if (isset($_GET['delete']) && isset($_GET['_wpnonce'])){
         $del_id = intval($_GET['delete']);
         if (wp_verify_nonce($_GET['_wpnonce'], 'wprsvp_delete_'.$del_id)){
-            // unlink partner if exists
             $cur = $wpdb->get_row($wpdb->prepare("SELECT partner_id FROM $table WHERE id=%d", $del_id), ARRAY_A);
             if ($cur && $cur['partner_id']) $wpdb->update($table, array('partner_id'=>null), array('id'=>$cur['partner_id']));
             $wpdb->delete($table, array('id'=>$del_id));
@@ -393,7 +536,6 @@ function wprsvp_render_guests_page(){
         }
     }
 
-    // If editing, show edit form
     if (isset($_GET['action']) && $_GET['action']=='edit' && isset($_GET['id'])){
         $edit_id = intval($_GET['id']);
         $guest = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE id=%d", $edit_id), ARRAY_A);
@@ -425,12 +567,20 @@ function wprsvp_render_guests_page(){
         return;
     }
 
-    // List + add form
+    // List + add form + CSV import form
     $guests = $wpdb->get_results("SELECT * FROM $table ORDER BY last_name, first_name", ARRAY_A);
     $all_select = $wpdb->get_results("SELECT id, first_name, last_name FROM $table ORDER BY last_name, first_name", ARRAY_A);
     ?>
     <div class="wrap">
       <h1>Wedding Guests</h1>
+
+      <h2>Import CSV</h2>
+      <p>CSV columns: first,last,email,partner_first,partner_last,guest_meal,rsvp (header row required)</p>
+      <form method="post" enctype="multipart/form-data">
+        <?php wp_nonce_field('wprsvp_import_csv'); ?>
+        <input type="file" name="wprsvp_csv" accept=".csv" required>
+        <p><input type="submit" name="wprsvp_import_csv" class="button-primary" value="Import CSV"></p>
+      </form>
 
       <h2>Add New Guest</h2>
       <form method="post">
@@ -476,6 +626,8 @@ function wprsvp_render_guests_page(){
     </div>
     <?php
 }
+add_action('admin_menu','wprsvp_register_pages');
+function wprsvp_register_pages(){ /* registered above */ }
 
 /* -------- Elementor Widget -------- */
 add_action('elementor/widgets/widgets_registered', function($widgets_manager){

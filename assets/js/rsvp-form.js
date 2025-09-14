@@ -29,7 +29,6 @@
             var p = data.data.partner;
             document.getElementById('wprsvp-partner-block').style.display = 'block';
             document.getElementById('wprsvp-partner-note').innerText = 'Partner: ' + p.first_name + ' ' + p.last_name;
-            // store partner id in a hidden input for submit
             var existing = document.getElementById('wprsvp-partner-id');
             if (!existing){
               var inp = document.createElement('input');
@@ -47,7 +46,6 @@
           }
 
         } else {
-          // not found: clear previous values and hide partner block
           document.getElementById('wprsvp-id').value = '';
           document.getElementById('wprsvp-email').value = '';
           document.getElementById('wprsvp-meal').value = '';
@@ -62,7 +60,6 @@
     fullForm.addEventListener('submit', function(e){
       e.preventDefault();
       var fd = new FormData(fullForm);
-      // populate name fields from initial form so server has them
       fd.append('first_name', document.getElementById('wprsvp-first').value.trim());
       fd.append('last_name', document.getElementById('wprsvp-last').value.trim());
       fd.append('action','wprsvp_submit');
