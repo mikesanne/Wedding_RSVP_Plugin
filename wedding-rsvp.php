@@ -2,8 +2,8 @@
 /*
 Plugin Name: Wedding RSVP & Guest Database
 Plugin URI:  https://example.com/
-Description: Search/create wedding guests and collect RSVPs. Frontend shortcode + admin list + CSV export.
-Version:     1.0
+Description: Search/create wedding guests and collect RSVPs. Frontend shortcode + admin list + CSV export + Elementor widget + email confirmation.
+Version:     1.1
 Author:      Your Name
 Text Domain: wedding-rsvp
 */
@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) exit;
 
 define('WPRSVP_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPRSVP_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('WPRSVP_VERSION','1.0');
+define('WPRSVP_VERSION','1.1');
 
 /* -------- Activation: create table -------- */
 register_activation_hook(__FILE__, 'wprsvp_activate');
@@ -54,7 +54,7 @@ function wprsvp_enqueue_scripts(){
     wp_enqueue_style('wprsvp-css', WPRSVP_PLUGIN_URL . 'assets/css/rsvp-style.css', array(), WPRSVP_VERSION);
 }
 
-/* -------- Shortcode (renders the frontend form) -------- */
+/* -------- Shortcode -------- */
 add_shortcode('wedding_rsvp_form','wprsvp_render_form');
 function wprsvp_render_form($atts){
     ob_start();
@@ -124,18 +124,17 @@ function wprsvp_render_form($atts){
     return ob_get_clean();
 }
 
-/* -------- AJAX: search by name -------- */
+/* -------- AJAX: search -------- */
 add_action('wp_ajax_nopriv_wprsvp_search', 'wprsvp_search');
 add_action('wp_ajax_wprsvp_search', 'wprsvp_search');
 function wprsvp_search(){
     check_ajax_referer('wprsvp_nonce','nonce');
-    $first = isset($_POST['first_name']) ? sanitize_text_field($_POST['first_name']) : '';
-    $last  = isset($_POST['last_name']) ? sanitize_text_field($_POST['last_name']) : '';
+    $first = sanitize_text_field($_POST['first_name'] ?? '');
+    $last  = sanitize_text_field($_POST['last_name'] ?? '');
     if (empty($first) || empty($last)) wp_send_json_error(array('message'=>'Missing name'));
 
     global $wpdb;
     $table = $wpdb->prefix . 'wedding_guests';
-    // case-insensitive search
     $sql = $wpdb->prepare("SELECT * FROM $table WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) LIMIT 1", $first, $last);
     $guest = $wpdb->get_row($sql, ARRAY_A);
 
@@ -143,7 +142,7 @@ function wprsvp_search(){
     else wp_send_json_success(array('found'=>false));
 }
 
-/* -------- AJAX: create or update guest -------- */
+/* -------- AJAX: submit -------- */
 add_action('wp_ajax_nopriv_wprsvp_submit', 'wprsvp_submit');
 add_action('wp_ajax_wprsvp_submit', 'wprsvp_submit');
 function wprsvp_submit(){
@@ -151,135 +150,99 @@ function wprsvp_submit(){
     global $wpdb;
     $table = $wpdb->prefix . 'wedding_guests';
 
-    // sanitize inputs
-    $guest_id = isset($_POST['guest_id']) ? intval($_POST['guest_id']) : 0;
-    $first = isset($_POST['first_name']) ? sanitize_text_field($_POST['first_name']) : '';
-    $last  = isset($_POST['last_name']) ? sanitize_text_field($_POST['last_name']) : '';
-    $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : null;
-    $guest_meal = isset($_POST['guest_meal']) ? sanitize_text_field($_POST['guest_meal']) : null;
-    $partner_first = isset($_POST['partner_first_name']) ? sanitize_text_field($_POST['partner_first_name']) : null;
-    $partner_last  = isset($_POST['partner_last_name']) ? sanitize_text_field($_POST['partner_last_name']) : null;
-    $partner_meal  = isset($_POST['partner_meal']) ? sanitize_text_field($_POST['partner_meal']) : null;
-    $rsvp = isset($_POST['rsvp_status']) ? sanitize_text_field($_POST['rsvp_status']) : null;
-    $partner_rsvp = isset($_POST['partner_rsvp_status']) ? sanitize_text_field($_POST['partner_rsvp_status']) : null;
-    $notes = isset($_POST['notes']) ? sanitize_textarea_field($_POST['notes']) : null;
+    $guest_id = intval($_POST['guest_id'] ?? 0);
+    $first = sanitize_text_field($_POST['first_name'] ?? '');
+    $last  = sanitize_text_field($_POST['last_name'] ?? '');
+    $email = sanitize_email($_POST['email'] ?? '');
+    $guest_meal = sanitize_text_field($_POST['guest_meal'] ?? '');
+    $partner_first = sanitize_text_field($_POST['partner_first_name'] ?? '');
+    $partner_last  = sanitize_text_field($_POST['partner_last_name'] ?? '');
+    $partner_meal  = sanitize_text_field($_POST['partner_meal'] ?? '');
+    $rsvp = sanitize_text_field($_POST['rsvp_status'] ?? '');
+    $partner_rsvp = sanitize_text_field($_POST['partner_rsvp_status'] ?? '');
+    $notes = sanitize_textarea_field($_POST['notes'] ?? '');
 
     if (empty($first) || empty($last)) wp_send_json_error(array('message'=>'First and last name required'));
 
-    // If an ID was provided, update that row. Otherwise try to find by name; if found update; else insert new.
+    $send_confirmation = function($email, $first, $rsvp, $guest_meal, $partner_first, $partner_last, $partner_rsvp, $partner_meal){
+        if (!$email) return;
+        $subject = "Your RSVP has been received";
+        $body = "Hi $first,\n\nThank you for your RSVP.\n".
+                "RSVP: $rsvp\nMeal: $guest_meal\n";
+        if ($partner_first || $partner_last){
+            $body .= "\nPartner: $partner_first $partner_last\nPartner RSVP: $partner_rsvp\nPartner Meal: $partner_meal\n";
+        }
+        $body .= "\nWe look forward to seeing you!\n\nBest regards,\nThe Wedding Team";
+        $headers = array('Content-Type: text/plain; charset=UTF-8');
+        wp_mail($email, $subject, $body, $headers);
+    };
+
     if ($guest_id){
-        $updated = $wpdb->update($table, array(
-            'first_name' => $first,
-            'last_name'  => $last,
-            'email'      => $email,
-            'guest_meal' => $guest_meal,
-            'partner_first_name' => $partner_first,
-            'partner_last_name'  => $partner_last,
-            'partner_meal' => $partner_meal,
-            'rsvp_status' => $rsvp,
-            'partner_rsvp_status' => $partner_rsvp,
-            'notes' => $notes
-        ), array('id' => $guest_id), array('%s','%s','%s','%s','%s','%s','%s','%s','%s','%s'), array('%d'));
+        $wpdb->update($table, array(
+            'first_name'=>$first,'last_name'=>$last,'email'=>$email,
+            'guest_meal'=>$guest_meal,'partner_first_name'=>$partner_first,
+            'partner_last_name'=>$partner_last,'partner_meal'=>$partner_meal,
+            'rsvp_status'=>$rsvp,'partner_rsvp_status'=>$partner_rsvp,'notes'=>$notes
+        ), array('id'=>$guest_id));
 
-        if ($updated === false) wp_send_json_error(array('message'=>'DB update error'));
-        else wp_send_json_success(array('message'=>'RSVP updated', 'guest_id'=>$guest_id));
+        $send_confirmation($email,$first,$rsvp,$guest_meal,$partner_first,$partner_last,$partner_rsvp,$partner_meal);
+        wp_send_json_success(array('message'=>'RSVP updated','guest_id'=>$guest_id));
     }
 
-    // no ID: search by name
-    $found = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) LIMIT 1", $first, $last), ARRAY_A);
+    $found = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE LOWER(first_name)=LOWER(%s) AND LOWER(last_name)=LOWER(%s) LIMIT 1",$first,$last),ARRAY_A);
     if ($found){
-        $updated = $wpdb->update($table, array(
-            'email'      => $email,
-            'guest_meal' => $guest_meal,
-            'partner_first_name' => $partner_first,
-            'partner_last_name'  => $partner_last,
-            'partner_meal' => $partner_meal,
-            'rsvp_status' => $rsvp,
-            'partner_rsvp_status' => $partner_rsvp,
-            'notes' => $notes
-        ), array('id' => $found['id']), array('%s','%s','%s','%s','%s','%s','%s','%s'), array('%d'));
-
-        if ($updated === false) wp_send_json_error(array('message'=>'DB update error'));
-        else wp_send_json_success(array('message'=>'RSVP updated (existing)', 'guest_id'=>$found['id']));
+        $wpdb->update($table, array(
+            'email'=>$email,'guest_meal'=>$guest_meal,
+            'partner_first_name'=>$partner_first,'partner_last_name'=>$partner_last,'partner_meal'=>$partner_meal,
+            'rsvp_status'=>$rsvp,'partner_rsvp_status'=>$partner_rsvp,'notes'=>$notes
+        ), array('id'=>$found['id']));
+        $send_confirmation($email,$first,$rsvp,$guest_meal,$partner_first,$partner_last,$partner_rsvp,$partner_meal);
+        wp_send_json_success(array('message'=>'RSVP updated (existing)','guest_id'=>$found['id']));
     }
 
-    // insert new
-    $inserted = $wpdb->insert($table, array(
-        'first_name' => $first,
-        'last_name'  => $last,
-        'email'      => $email,
-        'guest_meal' => $guest_meal,
-        'partner_first_name' => $partner_first,
-        'partner_last_name'  => $partner_last,
-        'partner_meal' => $partner_meal,
-        'rsvp_status' => $rsvp,
-        'partner_rsvp_status' => $partner_rsvp,
-        'notes' => $notes
-    ), array('%s','%s','%s','%s','%s','%s','%s','%s','%s','%s'));
-
-    if ($inserted === false) wp_send_json_error(array('message'=>'DB insert error'));
+    $wpdb->insert($table, array(
+        'first_name'=>$first,'last_name'=>$last,'email'=>$email,'guest_meal'=>$guest_meal,
+        'partner_first_name'=>$partner_first,'partner_last_name'=>$partner_last,'partner_meal'=>$partner_meal,
+        'rsvp_status'=>$rsvp,'partner_rsvp_status'=>$partner_rsvp,'notes'=>$notes
+    ));
     $new_id = $wpdb->insert_id;
-    wp_send_json_success(array('message'=>'RSVP recorded', 'guest_id'=>$new_id));
+    $send_confirmation($email,$first,$rsvp,$guest_meal,$partner_first,$partner_last,$partner_rsvp,$partner_meal);
+    wp_send_json_success(array('message'=>'RSVP recorded','guest_id'=>$new_id));
 }
 
-/* -------- Admin menu + simple list + CSV export -------- */
+/* -------- Admin page -------- */
 add_action('admin_menu','wprsvp_admin_menu');
 function wprsvp_admin_menu(){
-    add_menu_page('Wedding Guests', 'Wedding Guests', 'manage_options', 'wprsvp-guests', 'wprsvp_admin_page');
+    add_menu_page('Wedding Guests','Wedding Guests','manage_options','wprsvp-guests','wprsvp_admin_page');
 }
-
 function wprsvp_admin_page(){
     if (!current_user_can('manage_options')) return;
     global $wpdb;
-    $table = $wpdb->prefix . 'wedding_guests';
-
-    // Export CSV
+    $table = $wpdb->prefix.'wedding_guests';
     if (isset($_GET['action']) && $_GET['action']==='export_csv'){
-        $rows = $wpdb->get_results("SELECT * FROM $table ORDER BY last_name, first_name", ARRAY_A);
-        if (empty($rows)){
-            echo '<div class="notice notice-warning"><p>No guests to export</p></div>';
-        } else {
-            header('Content-Type: text/csv; charset=utf-8');
-            header('Content-Disposition: attachment; filename=wedding-guests.csv');
-            $output = fopen('php://output','w');
-            fputcsv($output, array_keys($rows[0]));
-            foreach ($rows as $r) fputcsv($output, $r);
-            fclose($output);
-            exit;
-        }
+        $rows = $wpdb->get_results("SELECT * FROM $table ORDER BY last_name, first_name",ARRAY_A);
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=wedding-guests.csv');
+        $out=fopen('php://output','w'); fputcsv($out,array_keys($rows[0])); foreach($rows as $r) fputcsv($out,$r); fclose($out); exit;
     }
-
-    $rows = $wpdb->get_results("SELECT * FROM $table ORDER BY last_name, first_name LIMIT 200", ARRAY_A);
-    ?>
-    <div class="wrap">
-      <h1>Wedding Guests</h1>
-      <p><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=wprsvp-guests&action=export_csv')); ?>">Export CSV</a></p>
-
-      <table class="widefat fixed" cellspacing="0">
-        <thead>
-          <tr>
-            <th>ID</th><th>First name</th><th>Last name</th><th>Email</th><th>Partner</th><th>Guest meal</th><th>Partner meal</th><th>RSVP</th>
-          </tr>
-        </thead>
-        <tbody>
-        <?php if (empty($rows)) { echo '<tr><td colspan="8">No guests found</td></tr>'; } else {
-            foreach ($rows as $r){
-                echo '<tr>';
-                echo '<td>'.esc_html($r['id']).'</td>';
-                echo '<td>'.esc_html($r['first_name']).'</td>';
-                echo '<td>'.esc_html($r['last_name']).'</td>';
-                echo '<td>'.esc_html($r['email']).'</td>';
-                echo '<td>'.esc_html(trim($r['partner_first_name'].' '.$r['partner_last_name'])).'</td>';
-                echo '<td>'.esc_html($r['guest_meal']).'</td>';
-                echo '<td>'.esc_html($r['partner_meal']).'</td>';
-                echo '<td>'.esc_html($r['rsvp_status']).'</td>';
-                echo '</tr>';
-            }
-        } ?>
-        </tbody>
-      </table>
-    </div>
-    <?php
+    $rows=$wpdb->get_results("SELECT * FROM $table ORDER BY last_name, first_name LIMIT 200",ARRAY_A);
+    echo '<div class="wrap"><h1>Wedding Guests</h1><p><a class="button" href="'.esc_url(admin_url('admin.php?page=wprsvp-guests&action=export_csv')).'">Export CSV</a></p>';
+    echo '<table class="widefat"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Partner</th><th>Guest meal</th><th>Partner meal</th><th>RSVP</th></tr></thead><tbody>';
+    if ($rows){ foreach($rows as $r){ echo '<tr><td>'.$r['id'].'</td><td>'.$r['first_name'].' '.$r['last_name'].'</td><td>'.$r['email'].'</td><td>'.$r['partner_first_name'].' '.$r['partner_last_name'].'</td><td>'.$r['guest_meal'].'</td><td>'.$r['partner_meal'].'</td><td>'.$r['rsvp_status'].'</td></tr>'; } } else { echo '<tr><td colspan="7">No guests</td></tr>'; }
+    echo '</tbody></table></div>';
 }
+
+/* -------- Elementor Widget -------- */
+add_action('elementor/widgets/widgets_registered', function($widgets_manager){
+    if (!class_exists('Elementor\\Widget_Base')) return;
+    class WPRSVP_Elementor_Widget extends \Elementor\Widget_Base {
+        public function get_name(){ return 'wprsvp_form'; }
+        public function get_title(){ return 'Wedding RSVP Form'; }
+        public function get_icon(){ return 'eicon-form-horizontal'; }
+        public function get_categories(){ return ['general']; }
+        protected function render(){ echo do_shortcode('[wedding_rsvp_form]'); }
+    }
+    $widgets_manager->register(new \WPRSVP_Elementor_Widget());
+});
 
 /* End of plugin */

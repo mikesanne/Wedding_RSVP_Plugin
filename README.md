@@ -10,3 +10,8 @@ Install: copy folder to wp-content/plugins/, then activate plugin in WP admin. S
 - Stored entries in a custom database table.
 - Very limited admin interface (just viewing entries).
 - No partner linking, no email integration.
+
+# Version 2 (Elementor support + Email confirmation)
+- Added an Elementor widget so the form could be dropped into pages with drag-and-drop.
+- Added basic email confirmation (plain email sent after RSVP).
+- Still very simple guest handling.
